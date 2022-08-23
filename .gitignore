@@ -127,3 +127,9 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+# Apple
+.DS_Store
+
+# data files don't push
+btc_tx_data/
