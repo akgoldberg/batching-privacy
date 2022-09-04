@@ -138,3 +138,4 @@ dmypy.json
 btc_tx_data/
 wiki_data_api/
 *.csv
+enwiki*.gz
