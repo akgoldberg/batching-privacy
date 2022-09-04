@@ -131,5 +131,10 @@ dmypy.json
 # Apple
 .DS_Store
 
+# Pybot
+*.lwp
+
 # data files don't push
 btc_tx_data/
+wiki_data_api/
+*.csv
