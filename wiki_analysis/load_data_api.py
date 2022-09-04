@@ -34,10 +34,10 @@ def get_all_pages():
 
     return all_pages[1:]
 
-def get_revs(page_name, start_date=START_DATE, site=SITE):
+def get_revs(page_name, start_date=START_DATE, end_date=END_DATE, site=SITE):
     try:
         page = pywikibot.Page(site, page_name)
-        rgen = page.revisions(content=False, starttime=END_DATE, endtime=START_DATE)
+        rgen = page.revisions(content=False, starttime=end_date, endtime=start_date)
     except pywikibot.exceptions.NoPageError:
         return None
     except pywikibot.exceptions.InvalidTitleError:
@@ -91,6 +91,9 @@ def get_all_revs_threaded(page_list, n_threads=10, verbose=False):
     return pd.concat(results).reset_index(drop=True)
 
 def load_data(pages, block=10000, save=100000, start=0):
+    if not os.path.isdir(SAVE_DIR):
+        os.mkdir(SAVE_DIR)
+
     print(f"Loading data starting from {'{:,}'.format(start)}.")
     out = []
     N = len(pages)
