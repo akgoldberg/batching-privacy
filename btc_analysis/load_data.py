@@ -195,8 +195,7 @@ def save_timing_df(df_test):
     df_test.to_csv(os.path.join(DIR_NAME, 'df_timing.csv'))
 
 def load_timing_df():
-    df_test = pd.read_csv(os.path.join(DIR_NAME, 'df_timing.csv'), index_col=0)
-    df_test['arrival_times'] = df_test['arrival_times'].apply(lambda l: [dt.fromtimestamp(t) for t in literal_eval(l)])
+    df_test = pd.read_csv(os.path.join(DIR_NAME, 'df_timing.csv'), index_col=0, converters={'arrival_times': json.loads})
     return df_test
 
 ################################################################################

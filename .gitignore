@@ -139,3 +139,8 @@ btc_tx_data/
 wiki_data_api/
 *.csv
 enwiki*.gz
+*.pkl
+*.npy
+
+# don't push calculation in mathematic
+*.nb
