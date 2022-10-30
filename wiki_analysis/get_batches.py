@@ -9,10 +9,7 @@ from multiprocess import Pool, cpu_count
 def flatten(l):
     return reduce(lambda a,b: list(a) + list(b), l)
 
-def xor(a,b):
-    return a^b
-
-def get_batches(g, cutoff=30):
+def get_batches(g, cutoff=5):
     z = np.array(sorted(list(zip(g['revid'], g['dt_timestamp'])), key=lambda l:l[1]))
     ends = np.where(np.diff(z[:,1]) > dt.timedelta(minutes=cutoff))[0]
     s = 0
@@ -32,7 +29,7 @@ def get_batches(g, cutoff=30):
 
     batch_ids = flatten([np.repeat(batch_ids[i], len(b)) for i, b in enumerate(batches)])
 
-    return np.vstack((z[:,0], batch_ids)).T
+    return pd.DataFrame(np.vstack((z[:,0], batch_ids)).T, columns=['revid', 'batchid'])
 
 def applyParallel(dfGrouped, func):
     with Pool(cpu_count()) as p:
@@ -46,7 +43,7 @@ def main():
     df_g = df[df.user.isin(g[g>1].index)].groupby('user')[['revid', 'dt_timestamp']]
     # df_g = df[df.user.isin(df.user.unique()[:1000])].groupby('user')[['revid', 'dt_timestamp']]
     b = applyParallel(df_g, get_batches)
-    with open('batches_15.npy', 'wb') as f:
+    with open('batches_5.npy', 'wb') as f:
         np.save(f, b)
 
 if __name__ == "__main__":

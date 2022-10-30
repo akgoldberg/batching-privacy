@@ -2,7 +2,6 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
-from scipy.stats import randint,geom, uniform, bernoulli
 
 import time
 import os
@@ -12,6 +11,10 @@ import itertools
 
 from multiprocess import Pool, cpu_count
 
+import sys
+sys.path.append('..')
+from helpers import *
+
 import load_data
 
 # set default g-value of 10 minutes when not enough data to evaluate
@@ -20,58 +23,8 @@ DEFAULT_G = 10 * 60
 
 P_vals = [25, 50, 75, 95]
 eps_vals = [0.1, 0.5, 1., 2.]
-Ts = np.arange(60, 3600 + 60, 300)
-Ws = np.arange(0.5, 6.5, 0.5)
-
-################################################################################
-############################# PARALLELIZE APPLIES ##############################
-################################################################################
-def applyParallel(df, func):
-    with Pool(cpu_count()) as p:
-        ret_list = p.map(func, df)
-    return np.vstack(ret_list)
-
-def applyParallelGroupBy(dfGrouped, func):
-    with Pool(cpu_count()) as p:
-        ret_list = p.map(func, [group for name, group in dfGrouped])
-    return np.vstack(ret_list)
-
-################################################################################
-########################## NOISE ADDITION MECHANISMS ###########################
-################################################################################
-
-def eps_to_K(eps):
-    return 1./(1-np.exp(-eps/2.))
-
-def sample_staircase(eps, g, gamma=None, size=1):
-    # if gamma = None, use OPT
-    if gamma is None:
-        gamma = 1/(1+np.exp(eps/2.))
-    b = np.exp(-1.*eps)
-    G = geom.rvs(1-b, loc=-1, size=size)
-    U = uniform.rvs(size=size)
-    p0 = gamma / (gamma + ((1-gamma)*b))
-    B = bernoulli.rvs(1.-p0, size=size)
-    return (1-B)*((G + gamma*U)*g) + B*((G + gamma + ((1-gamma)*U))*g)
-
-def apply_staircase(is_batched, g, eps, size=1):
-    d = sample_staircase(eps/2., g, size=size)
-    if is_batched:
-        return g + d
-    else:
-        return d
-
-def apply_uniform(is_batched, g, K, size=1):
-    if is_batched:
-        # sample from g to g*K
-        loc = g
-        scale = (K-1)*g
-    else:
-        # sample from 0 to g*K
-        loc = 0
-        scale = K*g
-    return uniform.rvs(loc=loc, scale=scale, size=size)
-
+Ts = np.hstack((np.arange(1, 10, 2), np.arange(10, 60, 10), np.arange(60, 3600, 300), np.arange(3600, 200000, 50000)))
+Ws = np.hstack((np.arange(0.01, 0.1, 0.02), np.arange(0.1, 0.5, 0.1), np.arange(0.5, 6.5, 0.5), np.arange(6.5, 20, 3)))
 
 ################################################################################
 ################################# EXPERIMENTS ##################################
@@ -146,6 +99,31 @@ def generate_delays(df, eps, P_vals, iters=5, batched_only=False):
         out[f'{p}'] = {'uniform': unif_runs, 'staircase': stair_runs}
     return out
 
+
+# simulate informed and basic thersholding attack with no privacy noise added
+def simulate_attack_no_privacy(df_pairs, P_val):
+    batch = df_pairs['time_diff'] <= 60
+    out_basic = []
+    out_informed = []
+    g = df_pairs[f'g_{P_val}']
+
+    for T in Ts:
+        batch_pred = df_pairs['time_diff'] <= T
+        n_TP = sum(batch_pred & batch)
+        n_FP = sum(batch_pred & ~batch)
+        n_FN = sum(~batch_pred & batch)
+        out_basic += [(n_TP, n_FP, n_FN)]
+
+    for W in Ws:
+        batch_pred = df_pairs['time_diff'] <= g*W
+
+        n_TP = sum(batch_pred & batch)
+        n_FP = sum(batch_pred & ~batch)
+        n_FN = sum(~batch_pred & batch)
+        out_informed += [(n_TP, n_FP, n_FN)]
+
+    return out_basic, out_informed
+
 # simulate informed and basic thresholding attack for one setting of g and various eps
 def simulate_attack(df, df_pairs, noise, P_val, eps_vals, iters=5):
     df_noise_unif = pd.concat([noise[f'{eps}'][f'{P_val}']['uniform'] for eps in eps_vals], axis=1)
@@ -166,8 +144,15 @@ def simulate_attack(df, df_pairs, noise, P_val, eps_vals, iters=5):
     out_basic = []
     out_informed = []
     g = df_pairs_noise_1[f'g_{P_val}']
+
+    out_basic_nopriv, out_informed_nopriv = simulate_attack_no_privacy(df_pairs_noise_1, P_val)
+
+    out_basic += out_basic_nopriv
+    out_informed += out_informed_nopriv
+
     for c in cols:
         time_diff_priv = np.abs(df_pairs_noise_1[c] - df_pairs_noise_2[c])
+
         for T in Ts:
             batch_pred = time_diff_priv <= T
             n_TP = sum(batch_pred & batch)
@@ -232,12 +217,29 @@ def load_data_with_g(P_vals, eps_vals):
 
     return df_base, df_pairs, res
 
-def load_experiment_results(iters=5):
-    df_base, df_pairs, res = load_data_with_g(P_vals, eps_vals)
+def get_attack_data(out, n_tot, iters, kind):
+    if kind == 'basic':
+        n_params = len(Ts)
+    if kind == 'informed':
+        n_params = len(Ws)
 
-    attack_file_path = os.path.join(DIR_NAME, 'saved_attack_res.pkl')
-    with open(attack_file_path, 'rb') as f:
-        out_basic, out_informed = pickle.load(f)
+    out_no_priv = out[:n_params]
+    out = out[n_params:]
+    n_TP_0 = np.array([l[0] for l in out_no_priv])
+    n_FP_0 = np.array([l[0] for l in out_no_priv])
+    n_FN_0 =  np.array([l[2] for l in out_no_priv])
+    n_TN_0 = n_tot - (n_TP_0 + n_FP_0 + n_FN_0)
+
+    n_TP = np.array([l[0] for l in out]).reshape(-1, iters, n_params).sum(axis=1)
+    n_FP = np.array([l[1] for l in out]).reshape(-1, iters, n_params).sum(axis=1)
+    n_FN =  np.array([l[2] for l in out]).reshape(-1, iters, n_params).sum(axis=1)
+    n_TN = iters*n_tot - (n_TP + n_FP + n_FN)
+
+    return [np.vstack([n_TP_0, n_TP]), np.vstack([n_FP_0, n_FP]), np.vstack([n_TN_0, n_TN]), np.vstack([n_FN_0, n_FN])]
+
+
+def load_experiment_results(P_vals_to_load, iters=5):
+    df_base, df_pairs, res = load_data_with_g(P_vals, eps_vals)
 
     df_noise_unif = pd.concat([res[f'{eps}'][f'{P}']['uniform'] for eps,P in itertools.product(eps_vals, P_vals)], axis=1)
     cols = np.arange(0, iters*len(eps_vals)*len(P_vals))
@@ -254,28 +256,36 @@ def load_experiment_results(iters=5):
     a = df_noise_staircase[df_noise_staircase.is_batched][cols].to_numpy()
     staircase_noise = np.hstack(a.reshape(-1, len(P_vals) * len(eps_vals), iters).T)
 
-    def get_attack_data(out, n_tot, iters):
-        n_TP = np.array([l[0] for l in out]).reshape(-1, 5, 12).sum(axis=1)
-        n_FP = np.array([l[1] for l in out]).reshape(-1, 5, 12).sum(axis=1)
-        n_FN =  np.array([l[2] for l in out]).reshape(-1, 5, 12).sum(axis=1)
-        n_TN = iters*df_pairs.shape[0] - (n_TP + n_FP + n_FN)
+    results_basic = {}
+    results_informed = {}
+    for P_val in P_vals_to_load:
+        attack_file_path = os.path.join(DIR_NAME, f'saved_attack_res_{P_val}.pkl')
+        with open(attack_file_path, 'rb') as f:
+            out_basic, out_informed = pickle.load(f)
+        # return four lists (TP, FP, FN, TN) with list of results for attack for no privacy and each epsilon value
+        results_basic[P_val] = get_attack_data(out_basic, df_pairs.shape[0], iters, kind='basic')
+        results_informed[P_val] = get_attack_data(out_informed, df_pairs.shape[0], iters, kind='informed')
 
-        return [n_TP, n_FP, n_FN, n_TN]
-
-    results_basic = get_attack_data(out_basic, df_pairs.shape[0], iters)
-    results_informed = get_attack_data(out_informed, df_pairs.shape[0], iters)
     # return delay distributions and attack results
     return unif_noise, staircase_noise, results_basic, results_informed
 
 def main():
+    args = sys.argv[1:]
+    if args[0] is None:
+        print("Missing value of percentile to test experiments on.")
+        return
+    else:
+        P_to_test = int(args[0])
+        print(f'Running experiments using {P_to_test}th percentile')
+
     # Load data
     df_base, df_pairs, res = load_data_with_g(P_vals, eps_vals)
 
     # Simulate attacks
     t = time.time()
-    out_basic, out_informed = simulate_attack(df_base, df_pairs, res, 50, eps_vals)
+    out_basic, out_informed = simulate_attack(df_base, df_pairs, res, P_to_test, eps_vals)
     out_basic
-    attack_file_path = os.path.join(DIR_NAME, 'saved_attack_res.pkl')
+    attack_file_path = os.path.join(DIR_NAME, f'saved_attack_res_{P_to_test}.pkl')
     with open(attack_file_path, 'wb') as f:
         pickle.dump([out_basic, out_informed], f)
     print(f'Ran informed attack once in {time.time() - t} seconds')
@@ -283,37 +293,37 @@ def main():
 if __name__ == "__main__":
     main()
 
-################################################################################
-#################################### OLD #######################################
-################################################################################
-
-def plot_delays(stair_runs, epoch_runs, cutoff=95, ax=None):
-    if ax == None:
-        fig, ax = plt.subplots(figsize=(10,10))
-
-    s = np.hstack(stair_runs)
-    e = np.hstack(epoch_runs)
-
-    x_max = 300
-
-    ax.hist([e, s], bins=np.arange(0, x_max, 10), alpha=0.9, label=['random epoch', 'staircase'], density=True)
-
-    ax.legend(fontsize=16)
-
-    ax.set_xlabel('Number of Minutes Delayed')
-    ax.set_ylabel('Density')
-
-def get_percentiles(stair_runs, epoch_runs, eps_value):
-    p25 = np.percentile(stair_runs, 25), np.percentile(epoch_runs, 25)
-    p50 = np.percentile(stair_runs, 50), np.percentile(epoch_runs, 50)
-    p75 = np.percentile(stair_runs, 75), np.percentile(epoch_runs, 75)
-    p95 = np.percentile(stair_runs, 95), np.percentile(epoch_runs, 95)
-    avg = np.mean(stair_runs), np.mean(epoch_runs)
-
-    d = pd.DataFrame([p25, p50, p75, p95, avg]).T
-    d.index = ['Staircase', 'Random Epoch']
-    d.columns= ['p25', 'p50', 'p75', 'p95', 'Mean']
-    eps = r'$\epsilon$'
-    d[eps] = eps_value
-    d.set_index(eps, append=True, inplace=True)
-    return d.round(decimals=1)
+# ################################################################################
+# #################################### OLD #######################################
+# ################################################################################
+#
+# def plot_delays(stair_runs, epoch_runs, cutoff=95, ax=None):
+#     if ax == None:
+#         fig, ax = plt.subplots(figsize=(10,10))
+#
+#     s = np.hstack(stair_runs)
+#     e = np.hstack(epoch_runs)
+#
+#     x_max = 300
+#
+#     ax.hist([e, s], bins=np.arange(0, x_max, 10), alpha=0.9, label=['random epoch', 'staircase'], density=True)
+#
+#     ax.legend(fontsize=16)
+#
+#     ax.set_xlabel('Number of Minutes Delayed')
+#     ax.set_ylabel('Density')
+#
+# def get_percentiles(stair_runs, epoch_runs, eps_value):
+#     p25 = np.percentile(stair_runs, 25), np.percentile(epoch_runs, 25)
+#     p50 = np.percentile(stair_runs, 50), np.percentile(epoch_runs, 50)
+#     p75 = np.percentile(stair_runs, 75), np.percentile(epoch_runs, 75)
+#     p95 = np.percentile(stair_runs, 95), np.percentile(epoch_runs, 95)
+#     avg = np.mean(stair_runs), np.mean(epoch_runs)
+#
+#     d = pd.DataFrame([p25, p50, p75, p95, avg]).T
+#     d.index = ['Staircase', 'Random Epoch']
+#     d.columns= ['p25', 'p50', 'p75', 'p95', 'Mean']
+#     eps = r'$\epsilon$'
+#     d[eps] = eps_value
+#     d.set_index(eps, append=True, inplace=True)
+#     return d.round(decimals=1)

@@ -142,5 +142,8 @@ enwiki*.gz
 *.pkl
 *.npy
 
-# don't push calculation in mathematic
+# don't push calculation in mathematica
 *.nb
+
+wiki_analysis/apicache-py3
+*.ctrl
